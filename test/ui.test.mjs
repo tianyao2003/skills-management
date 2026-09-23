@@ -37,6 +37,61 @@ test('no hardcoded colors in the client source — ui-theme tokens only', () => 
   assert.ok(src.includes('var(--dsw-alias-bg-layer-1'), 'surface token consumed')
 })
 
+test('no component with hooks is invoked as a plain function', () => {
+  // Regression: AllSkillsView called `SourceFilterEl({...})`, a wrapper that invoked
+  // SourceFilter() directly. SourceFilter owns a useState, so that hook landed on
+  // AllSkillsView — which returns <Spinner/> early (zero hooks) while catalogs load and
+  // gains one hook afterwards, throwing "Rendered more hooks than during the previous
+  // render" and blanking the whole panel. See client/index.js AllSkillsView.
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  const lines = src.split('\n')
+
+  const decls = []
+  lines.forEach((l, i) => {
+    const m = /^function ([A-Za-z0-9_]+)\s*\(/.exec(l)
+    if (m) decls.push({ name: m[1], line: i + 1 })
+  })
+
+  const hasHooks = new Map()
+  decls.forEach((d, k) => {
+    const end = k + 1 < decls.length ? decls[k + 1].line - 1 : lines.length
+    const body = lines.slice(d.line - 1, end).join('\n')
+    hasHooks.set(d.name, /\b(useState|useEffect|useRef|useMemo|useCallback)\s*\(/.test(body))
+  })
+
+  const offenders = []
+  for (const { name, line } of decls) {
+    if (!hasHooks.get(name)) continue
+    const re = new RegExp(`(^|[^\\w.$])${name}\\s*\\(`, 'g')
+    lines.forEach((l, i) => {
+      if (i + 1 === line) return
+      const code = l.replace(/\/\/.*$/, '').trim()
+      if (!code) return
+      re.lastIndex = 0
+      let m
+      while ((m = re.exec(code)) !== null) {
+        // `h(Name, ...)` is the correct mount; anything else is a direct call.
+        if (/\bh\s*\(\s*$/.test(code.slice(0, m.index + m[1].length))) continue
+        offenders.push(`${name} called at line ${i + 1}`)
+      }
+    })
+  }
+  assert.deepEqual(offenders, [], 'mount hook-owning components with h(), never call them directly')
+})
+
+test('gradient/shortName never throw on missing or non-string names', () => {
+  // Both run during render; a throw here is swallowed by SkillsPage's try/catch and
+  // surfaces as a blank panel. They must degrade instead of raising.
+  const { gradient, shortName } = plugin.__internals
+  for (const bad of [undefined, null, '', 42]) {
+    assert.doesNotThrow(() => gradient(bad), `gradient(${String(bad)})`)
+    assert.doesNotThrow(() => shortName(bad), `shortName(${String(bad)})`)
+  }
+  assert.equal(shortName('affaan-m-ECC/agent-harness-construction'), 'agent-harness-construction')
+  assert.equal(shortName(undefined), '')
+  assert.equal(shortName(42), '42')
+})
+
 test('matchSkill covers name/description/keywords case-insensitively', () => {
   const skill = { name: 'Lark-Base', description: '多维表格', keywords: ['Feishu'] }
   assert.ok(matchSkill(skill, 'lark'))

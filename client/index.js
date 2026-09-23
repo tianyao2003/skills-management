@@ -588,14 +588,20 @@ function formatTime(iso) {
   } catch { return '-' }
 }
 
+/** 头像底色：名字缺失或非字符串时退化为固定色，绝不在渲染期抛错
+ *  （渲染期 ANY throw 会被 SkillsPage 的 try/catch 换成空面板，见文首注释）。 */
 function gradient(name) {
+  const src = String(name || '')
   let hash = 0
-  for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0
+  for (let i = 0; i < src.length; i++) hash = ((hash << 5) - hash + src.charCodeAt(i)) | 0
   const h1 = Math.abs(hash) % 360
   return `linear-gradient(135deg, hsl(${h1},55%,55%), hsl(${(h1 + 40) % 360},45%,45%))`
 }
 
-const shortName = (name) => name.includes('/') ? name.split('/').slice(1).join('/') : name
+const shortName = (name) => {
+  const src = String(name || '')
+  return src.includes('/') ? src.split('/').slice(1).join('/') : src
+}
 
 /** Shared predicate for skill filtering (name / description / keywords). */
 function matchSkill(s, lower) {
@@ -1273,7 +1279,11 @@ function AllSkillsView({ executors, searchText, sourceFilter, sortBy, t, onSearc
       h(P.Button, { variant: 'ghost', size: 'sm', onClick: onBack }, t('backCards')),
       h('span', { className: 'sk-title' }, t('title')),
       h(InputBox, { value: searchText, placeholder: t('searchAll'), onSearch }),
-      SourceFilterEl({ rows: executors.filter(r => r.dirExists), value: sourceFilter, onChange: onFilter, t }),
+      // SourceFilter owns a useState, so it must be mounted as an element. Calling it
+      // as a plain function attributes that hook to AllSkillsView — which returns the
+      // Spinner early (zero hooks) while catalogs load, then renders one hook once they
+      // arrive: React throws "Rendered more hooks than during the previous render".
+      h(SourceFilter, { rows: executors.filter(r => r.dirExists), value: sourceFilter, onChange: onFilter, t }),
       SortSelect({ value: sortBy, onChange: onSort, t }),
       h('span', { className: 'spacer' }),
       h(Tag, null, `${items.length} ${t('skillsSuffix')}`)),
@@ -1322,7 +1332,6 @@ function InputBox({ value, placeholder, onSearch }) {
   return h('input', { value, placeholder, onChange: e => onSearch(e.target.value),
     style: { minWidth: 220, minHeight: 32, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', padding: '6px 12px' } })
 }
-function SourceFilterEl(args) { return SourceFilter(args) }
 
 // ── App root ─────────────────────────────────────────────────────────────
 
@@ -1646,7 +1655,7 @@ const CLIENT_NAME = '@weibaohui/skills-management'
 module.exports = {
   name: CLIENT_NAME,
   inject: ['slots', 'locale'],
-  __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, sortSkills, openTriggerSource, insertComposerText, fetchSkillCandidates },
+  __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, sortSkills, gradient, shortName, openTriggerSource, insertComposerText, fetchSkillCandidates },
   /** Test/host helper: mount a standalone page into any container. */
   __boot(container, opts = {}) {
     ensureStyles()

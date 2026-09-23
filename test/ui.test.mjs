@@ -131,6 +131,22 @@ test('market rows already in the library are badged, not offered for install', (
   assert.ok(/markMarketInstalled\(name, true\)/.test(src), 'install refreshes the badge')
 })
 
+test('search input is debounced and does not reset the grid on every keystroke', () => {
+  // Regression: InputBox bubbled every keystroke straight into SkillsPage's state, and
+  // each PagedGrid was keyed on the search term — so typing rebuilt the whole card grid
+  // (up to pageSize cards, each with an Avatar gradient and a token/char stat line)
+  // once per character. Defer the bubbled value and drop the search term from the key.
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  assert.ok(/timerRef\.current = setTimeout\(\(\) => \{ sentRef\.current = next; onSearch\(next\) \}, 300\)/.test(src),
+    'InputBox debounces the bubbled value')
+  assert.ok(/const \[local, setLocal\] = useState\(value\)/.test(src), 'InputBox keeps local echo state')
+
+  for (const bad of [/key: 'ed' \+ row\.key \+ searchText/, /key: 'md' \+ marketDrill \+ searchMarketDrill/, /key: 'ma' \+ searchMarketAll/]) {
+    assert.equal(bad.test(src), false, `search term must not be part of the PagedGrid key: ${bad}`)
+  }
+  assert.ok(/pageSize = 60, grow = 120/.test(src), 'first paint mounts fewer cards')
+})
+
 test('matchSkill covers name/description/keywords case-insensitively', () => {
   const skill = { name: 'Lark-Base', description: '多维表格', keywords: ['Feishu'] }
   assert.ok(matchSkill(skill, 'lark'))

@@ -1366,10 +1366,11 @@ window.__ModuleLoader__.load({
             ]))
     }
     
-    /** Incremental grid: renders the first pageSize cards and grows on demand —
-     *  the market collection alone holds 6k+ skills and must not mount at once.
-     *  Key the element by the active filter so filtering resets the window. */
-    function PagedGrid({ items, render, t, pageSize = 120, grow = 240, keyPrefix = '' }) {
+    /** 增量网格：先渲染前 pageSize 张，按需增长——市场集合有 6k+ 条，不能一次全挂。
+     *  以「当前筛选」作 key，让筛选变化时重置窗口。
+     *  [性能] pageSize 从 120 降到 60：首屏要一次性挂载全部卡片，120 张的
+     *  Avatar 渐变 / 时间格式化 / 注入开销文案开销明显，60 张已够撑满首屏。 */
+    function PagedGrid({ items, render, t, pageSize = 60, grow = 120, keyPrefix = '' }) {
       const [shown, setShown] = useState(pageSize)
       return [
         h('div', { className: 'sk-grid' }, items.slice(0, shown).map(render)),
@@ -1466,17 +1467,32 @@ window.__ModuleLoader__.load({
           h('span', { className: 'sk-dir' }, row.dir)),
         !skills.length
           ? h(Empty, null, searchText ? t('emptySearch') : t('emptySkillsIn', { label: row.label }))
-          : h(PagedGrid, { key: 'ed' + row.key + searchText + sortBy, items: skills, t,
+          : h(PagedGrid, { key: 'ed' + row.key + sortBy, items: skills, t,
               render: s => h(SkillCard, { key: s.name, row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) }),
       ]
     }
     
     function InputBox({ value, placeholder, onSearch }) {
+      // [性能] 本地暂存 + 300ms 防抖。原实现每次击键都把值冒泡到 SkillsPage 的 setState，
+      // 而网格的 key 含搜索词 → 每敲一个字符就整体重建一次卡片网格。
+      // 输入框自身保持即时回显；外部重置（切 tab 等）仍会同步回来。
+      const [local, setLocal] = useState(value)
+      const sentRef = useRef(value)
+      const timerRef = useRef(null)
+      useEffect(() => {
+        if (value !== sentRef.current) { sentRef.current = value; setLocal(value) }
+      }, [value])
+      useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
+      const emit = (next) => {
+        setLocal(next)
+        if (timerRef.current) clearTimeout(timerRef.current)
+        timerRef.current = setTimeout(() => { sentRef.current = next; onSearch(next) }, 300)
+      }
       if (prim('Input')) {
-        return h(P.Input, { value, placeholder, className: 'sk-input', onChange: e => onSearch(e.target.value),
+        return h(P.Input, { value: local, placeholder, className: 'sk-input', onChange: e => emit(e.target.value),
           style: { minWidth: 220 } })
       }
-      return h('input', { value, placeholder, onChange: e => onSearch(e.target.value),
+      return h('input', { value: local, placeholder, onChange: e => emit(e.target.value),
         style: { minWidth: 220, minHeight: 32, borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', padding: '6px 12px' } })
     }
     
@@ -1658,7 +1674,7 @@ window.__ModuleLoader__.load({
               h(InputBox, { value: searchMarketDrill, placeholder: t('filterWithin', { label: marketDrill }), onSearch: setSearchMarketDrill }),
               SortSelect({ value: sortBy, onChange: setSortBy, t })),
             sk.length
-              ? h(PagedGrid, { key: 'md' + marketDrill + searchMarketDrill + sortBy, items: sk, t,
+              ? h(PagedGrid, { key: 'md' + marketDrill + sortBy, items: sk, t,
                   render: s => h(SkillCard, { key: s.name, row: mkRow(s.source), s: mkCard(s), t,
                     onOpen: item => openDetail({ name: item.installName || item.name }, null),
                     onInstall: (_r, name) => setPendingInstall({ row: null, name }),
@@ -1676,7 +1692,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'spacer' }),
               h(Tag, null, `${sk.length} ${t('skillsSuffix')}`)),
             sk.length
-              ? h(PagedGrid, { key: 'ma' + searchMarketAll + sortBy, items: sk, t,
+              ? h(PagedGrid, { key: 'ma' + sortBy, items: sk, t,
                   render: s => h(SkillCard, { key: s.name, row: mkRow(s.source), s: mkCard(s), t,
                     onOpen: item => openDetail({ name: item.installName || item.name }, null),
                     onInstall: (_r, name) => setPendingInstall({ row: null, name }),

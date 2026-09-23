@@ -728,6 +728,26 @@ window.__ModuleLoader__.load({
         (s.keywords || []).some(k => String(k).toLowerCase().includes(lower))
     }
     
+    /** 「已在本机 DSH 库」判定。市场列表行带 `installed`（服务端用已装技能名集合算出），
+     *  详情接口带 `isInstalled`；两个面都认，卡片/详情才不会漏标。 */
+    function isInstalledRow(s) {
+      return s?.installed === true || s?.isInstalled === true
+    }
+    
+    /** 就地翻转市场行的 installed 位（保持原数组不命中时引用不变，便于 React 跳过重渲染）。
+     *  安装/删除只影响一行，没必要为它重走一遍 6k+ 的全市场扫描（GET / 约 2.3s）。 */
+    function patchMarketInstalled(market, name, on) {
+      if (!Array.isArray(market) || !name) return market
+      const target = String(name)
+      let hit = false
+      const next = market.map(s => {
+        // 市场行同时带 relPath（name）与末段（shortName），两个都比对
+        if (s.name === target || s.shortName === target) { hit = true; return { ...s, installed: on } }
+        return s
+      })
+      return hit ? next : market
+    }
+    
     /** 注入开销一行文案：token 在（宿主装了词表）→「≈N token · M 字符」，
      *  降级时只剩字符数；两者都缺（旧响应）→ null 不渲染。 */
     function usageText(s, t) {
@@ -897,6 +917,7 @@ window.__ModuleLoader__.load({
     function SkillCard({ row, s, t, onOpen, onInstall, onDelete, onShare, onToggleVisible }) {
       const name = shortName(s.name)
       const usage = usageText(s, t)
+      const installed = isInstalledRow(s)
       return h('div', { className: 'sk-card', role: 'button', tabIndex: 0,
           onClick: () => onOpen(s),
           onKeyDown: e => e.key === 'Enter' && onOpen(s) },
@@ -912,10 +933,16 @@ window.__ModuleLoader__.load({
             h(Tag, null, row.label),
             row.readOnly && h(Tag, { tone: 'danger' }, t('readOnlyTag')),
             s.version && h(Tag, { tone: 'accent' }, 'v' + s.version),
+            installed && h(Tag, { tone: 'ok' }, t('installedTag')),
             (row.key === 'dsh' || row.key === 'agents') && s.modelInvocable === false && h(Tag, { tone: 'danger' }, t('hiddenTag'))),
           h('div', { className: 'sk-rowbtns' },
-            row.key !== 'dsh' && h(ButtonLite, { primary: true, small: true,
-              onClick: e => { e.stopPropagation(); onInstall(row, s.installName || s.name) } }, t('toDsh')),
+            // Already in the DSH library: offer a disabled state chip instead of an
+            // Install button. Re-installing would otherwise hit the server's
+            // `skill '<x>' already installed` guard and surface as an error alert.
+            row.key !== 'dsh' && (installed
+              ? h(ButtonLite, { small: true, disabled: true, title: t('installedTag') }, t('installedTag'))
+              : h(ButtonLite, { primary: true, small: true,
+                onClick: e => { e.stopPropagation(); onInstall(row, s.installName || s.name) } }, t('toDsh'))),
             (row.key === 'dsh' || row.key === 'agents') && h(ButtonLite, { small: true,
               title: s.modelInvocable === false ? t('restoreAction') : t('hideAction'),
               onClick: e => { e.stopPropagation(); onToggleVisible(row, s.name, s.modelInvocable === false) } },
@@ -973,6 +1000,7 @@ window.__ModuleLoader__.load({
       const [toast, setToast] = useState(false)
       const meta = data?.meta || {}
       const row = sel.executorKey ? executors.find(x => x.key === sel.executorKey) : null
+      const installed = isInstalledRow(data)
     
       useEffect(() => {
         let alive = true
@@ -995,7 +1023,7 @@ window.__ModuleLoader__.load({
           const r = await fetch(API, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
           setConfirming(false)
-          onDeleted()
+          onDeleted(sel.name)
         } catch (e) { setConfirming(false); alert(t('operationFailed') + ': ' + e.message) }
       }
     
@@ -1005,7 +1033,7 @@ window.__ModuleLoader__.load({
           if (sel.executorKey && sel.executorKey !== 'dsh') body.from = sel.executorKey
           const r = await fetch(API + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)
-          onInstalled()
+          onInstalled(sel.name)
         } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
       }
     
@@ -1038,7 +1066,8 @@ window.__ModuleLoader__.load({
               h('div', { className: 'sk-page' },
                 h('div', { className: 'sk-hint' }, meta.description || meta.whenToUse || ''),
                 h('div', { className: 'sk-toolbar' },
-                  row && row.key !== 'dsh' && h(P.Button, { variant: 'primary', size: 'sm', onClick: doInstall }, `${t('installFrom', { label: row.label })}`),
+                  row && row.key !== 'dsh' && !installed && h(P.Button, { variant: 'primary', size: 'sm', onClick: doInstall }, `${t('installFrom', { label: row.label })}`),
+                  row && row.key !== 'dsh' && installed && h(Tag, { tone: 'ok' }, t('installedTag')),
                   row && row.key === 'dsh' && h(Tag, { tone: 'ok' }, t('activeInDsh')),
                   row && (row.key === 'dsh' || row.key === 'agents') && h('span', { className: 'sk-inv-toggle', title: t('invocationHint') },
                     h('span', { className: 'sk-dir' }, t('invocationToggle')),
@@ -1490,6 +1519,16 @@ window.__ModuleLoader__.load({
         setBaseLoading(true)
         getJson(API).then(setBase).catch(() => {}).finally(() => setBaseLoading(false))
       }
+      // Install/delete only flips one row's `installed` flag, so patch that row in place
+      // instead of re-walking the whole 6k+ market (GET / takes ~2.3s). A stale flag is
+      // still set so the next visit to the market tab reconciles with the server.
+      const markMarketInstalled = (name, on) => {
+        setBase(prev => {
+          if (!prev) return prev
+          const market = patchMarketInstalled(prev.market, name, on)
+          return market === prev.market ? prev : { ...prev, market }
+        })
+      }
       useEffect(reloadExecutors, [])
       useEffect(() => {
         if (tab === 'market' && baseStale) reloadBase()
@@ -1549,6 +1588,7 @@ window.__ModuleLoader__.load({
           setToastText(t('installedToast'))
           setTimeout(() => setToastText(null), 2600)
           reloadExecutors()
+          markMarketInstalled(name, true)
           setBaseStale(true)
         } catch (e) { alert(t('operationFailed') + ': ' + e.message) }
       }
@@ -1557,6 +1597,7 @@ window.__ModuleLoader__.load({
         await quickDelete(t, pendingDelete.executor, pendingDelete.name)
         setPendingDelete(null)
         reloadExecutors()
+        markMarketInstalled(pendingDelete.name, false)
         setBaseStale(true)
       }
     
@@ -1680,8 +1721,8 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sk-body' }, body),
         sel && h(DetailModal, { sel, executors, t,
           onClose: () => setSel(null),
-          onInstalled: () => { setSel(null); reloadExecutors(); setBaseStale(true) },
-          onDeleted: () => { setSel(null); reloadExecutors(); setBaseStale(true) } }),
+          onInstalled: (name) => { setSel(null); reloadExecutors(); markMarketInstalled(name, true); setBaseStale(true) },
+          onDeleted: (name) => { setSel(null); reloadExecutors(); markMarketInstalled(name, false); setBaseStale(true) } }),
         shareParams && h(ShareSkillDialog, {
           t, params: shareParams, onClose: () => setShareParams(null),
           onToast: (text) => { setMarketToast(text); setTimeout(() => setMarketToast(null), 3000) },
@@ -1773,7 +1814,7 @@ window.__ModuleLoader__.load({
     module.exports = {
       name: CLIENT_NAME,
       inject: ['slots', 'locale'],
-      __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, sortSkills, gradient, shortName, openTriggerSource, insertComposerText, fetchSkillCandidates },
+      __internals: { NS, ZH, EN, matchSkill, formatSize, formatTime, usageText, sortSkills, gradient, shortName, isInstalledRow, patchMarketInstalled, openTriggerSource, insertComposerText, fetchSkillCandidates },
       /** Test/host helper: mount a standalone page into any container. */
       __boot(container, opts = {}) {
         ensureStyles()

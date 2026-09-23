@@ -92,6 +92,45 @@ test('gradient/shortName never throw on missing or non-string names', () => {
   assert.equal(shortName(42), '42')
 })
 
+test('market rows already in the library are badged, not offered for install', () => {
+  // Regression: the market list has always shipped `installed` (src/index.js builds it
+  // from the installed-name set) and the detail endpoint ships `isInstalled`, but
+  // SkillCard never read either — so an installed skill still showed an active Install
+  // button, inviting a duplicate install that the server rejects with
+  // "skill '<x>' already installed".
+  const { isInstalledRow, patchMarketInstalled } = plugin.__internals
+
+  assert.equal(isInstalledRow({ installed: true }), true, 'market list plane')
+  assert.equal(isInstalledRow({ isInstalled: true }), true, 'detail plane')
+  assert.equal(isInstalledRow({ installed: false }), false)
+  assert.equal(isInstalledRow({}), false)
+  assert.equal(isInstalledRow(undefined), false)
+
+  // optimistic in-place flip must match relPath and leaf, and keep identity when it misses
+  const market = [
+    { name: 'affaan-m-ECC/agent-harness-construction', shortName: 'agent-harness-construction', installed: false },
+    { name: 'other/skill', shortName: 'skill', installed: false },
+  ]
+  const flipped = patchMarketInstalled(market, 'affaan-m-ECC/agent-harness-construction', true)
+  assert.equal(flipped[0].installed, true, 'matched by relPath')
+  assert.equal(flipped[1].installed, false, 'other rows untouched')
+  assert.equal(market[0].installed, false, 'input not mutated')
+
+  const byLeaf = patchMarketInstalled(market, 'skill', true)
+  assert.equal(byLeaf[1].installed, true, 'matched by shortName')
+
+  assert.equal(patchMarketInstalled(market, 'nope', true), market, 'miss keeps array identity')
+  assert.equal(patchMarketInstalled(market, undefined, true), market)
+  assert.equal(patchMarketInstalled(undefined, 'x', true), undefined)
+
+  // the card must actually consume the flag
+  const src = readFileSync(new URL('../client/index.js', import.meta.url), 'utf8')
+  assert.ok(/const installed = isInstalledRow\(s\)/.test(src), 'SkillCard derives installed')
+  assert.ok(/installed && h\(Tag, \{ tone: 'ok' \}, t\('installedTag'\)\)/.test(src), 'badge rendered')
+  assert.ok(/row\.key !== 'dsh' && \(installed/.test(src), 'install button gated on installed')
+  assert.ok(/markMarketInstalled\(name, true\)/.test(src), 'install refreshes the badge')
+})
+
 test('matchSkill covers name/description/keywords case-insensitively', () => {
   const skill = { name: 'Lark-Base', description: '多维表格', keywords: ['Feishu'] }
   assert.ok(matchSkill(skill, 'lark'))
